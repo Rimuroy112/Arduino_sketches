@@ -4,11 +4,11 @@
 #include <LiquidCrystal.h>  // Standard LCD library
 #include <Servo.h>          // Servo library
 
-// ULTRA-SENSITIVE CONFIGURATION
-const float ACCEL_THRESHOLD = 0.8;  // Very low threshold
-const unsigned long MIN_EVENT_DURATION = 600;  // 600ms of shaking
-const unsigned long PEAK_WINDOW = 200;         // 200ms window
-const unsigned long COOLDOWN_PERIOD = 10000;    // 2 second cooldown
+// ULTRA SENSITIVE CONFIGURATION
+const float ACCEL_THRESHOLD = 0.45;  // A change in acceleration greater than 0.45 m/s² will be considered a potential shake
+const unsigned long MIN_EVENT_DURATION = 500;  // Shaking must continue for at least 500 milliseconds to confirm an earthquake.
+const unsigned long PEAK_WINDOW = 200;         // If no new shake is detected for 200 milliseconds, the current shaking event is considered over.
+const unsigned long COOLDOWN_PERIOD = 10000;    // After an alarm is triggered, the system will remain in alarm state for 10000 milliseconds (10 seconds) before resetting.
 
 // PIN DEFINITIONS 
 const int ALARM_LED_PIN = 13;
@@ -31,11 +31,11 @@ LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
 Servo evacuationServo;
 
 // GLOBAL VARIABLES 
-unsigned long eventStartTime = 0;
-unsigned long lastPeakTime = 0;
-unsigned long alarmTriggeredTime = 0;
-bool eventActive = false;
-bool alarmTriggered = false;
+unsigned long eventStartTime = 0;     // Declares a global variable to store the time (in milliseconds) when a shaking event started
+unsigned long lastPeakTime = 0;       // Declares a global variable to store the time (in milliseconds) of the most recent detected shake
+unsigned long alarmTriggeredTime = 0; // Declares a global variable to store the time (in milliseconds) when the alarm was last triggered
+bool eventActive = false;             // Declares a global boolean flag to track if a shaking event is currently active. false means no event is happening.
+bool alarmTriggered = false;          // Declares a global boolean flag to track if the alarm is currently triggered. false means the alarm is not active.
 
 // Raw acceleration tracking
 float lastX = 0, lastY = 0, lastZ = 0;
@@ -159,74 +159,74 @@ void deactivateSafetyProtocols() {
 void loop() {
   // Read sensor data
   sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
+  mpu.getEvent(&a, &g, &temp);  // This line fetches the latest data from the MPU6050 sensor, storing the acceleration (a), gyro (g), and temperature (temp) readings.
   
   // Calculate CHANGE in acceleration
-  float deltaX = abs(a.acceleration.x - lastX);
-  float deltaY = abs(a.acceleration.y - lastY);
+  float deltaX = abs(a.acceleration.x - lastX);  // This calculates the absolute difference between the current acceleration on the X-axis and the previous reading stored in lastX
+  float deltaY = abs(a.acceleration.y - lastY);  
   float deltaZ = abs(a.acceleration.z - lastZ);
   
-  float maxDelta = max(deltaX, max(deltaY, deltaZ));
+  float maxDelta = max(deltaX, max(deltaY, deltaZ));   // This finds the largest change (delta) among the three axes
   
-  lastX = a.acceleration.x;
+  lastX = a.acceleration.x; // The current acceleration reading is saved into the lastX variable so it can be used as the "previous" value in the next loop cycle
   lastY = a.acceleration.y;
   lastZ = a.acceleration.z;
 
   // Update LCD display
-  static unsigned long lastLCDUpdate = 0;
-  if (millis() - lastLCDUpdate >= 300) {
+  static unsigned long lastLCDUpdate = 0;  // The variable is created only once, not every time the function runs.
+  if (millis() - lastLCDUpdate >= 300) {   // This section updates the display and LEDs only every 300ms to prevent flickering and make the text readable
     if (alarmTriggered) {
       // Show earthquake warning with countdown
-      unsigned long remaining = (COOLDOWN_PERIOD - (millis() - alarmTriggeredTime)) / 1000;
+      unsigned long remaining = (COOLDOWN_PERIOD - (millis() - alarmTriggeredTime)) / 1000;   // converts the remaining time for cooldown
       updateLCD("EARTHQUAKE!", "Reset in: " + String(remaining) + "s");
       
       // Flash buzzer during alarm
       static bool buzzerState = false;
-      buzzerState = !buzzerState;
+      buzzerState = !buzzerState; // toggles the state of the buzzer every time it runs. If the buzzer was ON, it turns it OFF. If it was OFF, it turns it ON. This creates a flashing or beeping effect.
       digitalWrite(BUZZER_PIN, buzzerState);
       
-    } else if (eventActive) {
+    } else if (eventActive) {  // If a shaking event is in progress but the alarm hasn't been triggered yet, it informs the user
       // Show shaking detection in progress
       updateLCD("Shaking Detected", String(millis() - eventStartTime) + "ms");
-      digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN)); // Blink
+      digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN));         // Blink
       
-    } else {
+    } else {   // If the system is in normal, idle monitoring mode, it displays the live, real-time value of maxDelta
       // Normal monitoring mode
       updateLCD("Accel: " + String(maxDelta, 1) + " m/s2", "Ready-Monitoring");
       digitalWrite(STATUS_LED_PIN, HIGH); // Steady on
     }
-    lastLCDUpdate = millis();
+    lastLCDUpdate = millis();      // updates the time
   }
 
   // Handle alarm cooldown
   if (alarmTriggered) {
-    if (millis() - alarmTriggeredTime >= COOLDOWN_PERIOD) {
+    if (millis() - alarmTriggeredTime >= COOLDOWN_PERIOD) {  // It checks if the alarm has been active for longer than the COOLDOWN_PERIOD
       resetDetector();
     }
     delay(30);
-    return;
+    return;  // If the alarm is active, this return statement exits the loop() function immediately. This means all detection logic below is skipped
   }
 
   // ULTRA-SENSITIVE DETECTION
-  if (maxDelta > ACCEL_THRESHOLD) {
-    lastPeakTime = millis();
+  if (maxDelta > ACCEL_THRESHOLD) {  // If the calculated change in acceleration (maxDelta) exceeds the configured threshold 
+    lastPeakTime = millis();   // The timer for the "last detected shake" is reset to the current time
     
-    if (!eventActive) {
+    if (!eventActive) { //If this is the first shake of a new event, it officially starts the event. It records the start time (eventStartTime), sets the eventActive flag to true, updates the LCD
       eventStartTime = millis();
       eventActive = true;
-      updateLCD("Motion Detected", "Measuring...");
+      updateLCD("Motion Detected","Measuring...");
       digitalWrite(STATUS_LED_PIN, LOW);
     }
     
     // Check if we've had enough sustained motion
-    if (eventActive && (millis() - eventStartTime >= MIN_EVENT_DURATION)) {
+    if (eventActive && (millis() - eventStartTime >= MIN_EVENT_DURATION)) { // If an event is already active and it has been going on for longer than MIN_EVENT_DURATION,it immediately calls triggerAlarm().This means the shaking was strong and continuous enough to confirm an earthquake.
       triggerAlarm();
     }
   }
   
   // Check if event should end
-  if (eventActive && (millis() - lastPeakTime > PEAK_WINDOW)) {
-    unsigned long eventDuration = millis() - eventStartTime;
+  if (eventActive && (millis() - lastPeakTime > PEAK_WINDOW)) {//This checks if an event is active BUT no new shakes have been detected for more than the PEAK_WINDOW
+    unsigned long eventDuration = millis() - eventStartTime; // This calculation gives the total length of the event in milliseconds
     
     if (eventDuration >= MIN_EVENT_DURATION) {
       triggerAlarm();
@@ -238,7 +238,7 @@ void loop() {
     }
   }
 
-  delay(10);
+  delay(10);   //  Pause what you're doing and wait for 10 milliseconds.This is a simple speed limit that keeps the entire system running smoothly and prevents it from going crazy
 }
 
 void triggerAlarm() {
